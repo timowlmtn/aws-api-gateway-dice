@@ -1,0 +1,142 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: 'AWS::Serverless-2016-10-31'
+Description: Rest API Implementation of a simple Dice Roller to show Cloud Formation REST Implementation
+
+Globals:
+  #https://github.com/awslabs/serverless-application-model/blob/develop/docs/globals.rst
+  Function:
+    Runtime: python3.8
+    MemorySize: 512
+
+Parameters:
+
+  LambdaFunctionName:
+    Type: String
+    Default: "LambdaRollDice"
+
+  RestApiName:
+    Type: String
+
+  Environment:
+    Type: String
+
+  StageName:
+    Type: String
+
+  VPC:
+    Type: AWS::EC2::VPC::Id
+    Description: The VPC ID defined for the application
+
+  SecurityGroupIds:
+    Type: List<AWS::EC2::SecurityGroup::Id>
+    Description: Security Group IDs that Lambda will use
+
+  VpcSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: VPC Subnet IDs that Lambda will use (min 2 for HA)
+
+Resources:
+  DefaultLambdaRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action: "sts:AssumeRole"
+      Path: "/"
+      Policies:
+        - PolicyName: "AllowMetricAdd"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action: "cloudwatch:PutMetricData"
+                Resource: "*"
+        - PolicyName: "AllowInvoke"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action: "lambda:InvokeFunction"
+                Resource: "*"
+        - PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Action:
+                  - "logs:CreateLogGroup"
+                  - "logs:CreateLogStream"
+                  - "logs:PutLogEvents"
+                Effect: "Allow"
+                Resource:
+                  - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${LambdaFunctionName}:*"
+          PolicyName: "lambda"
+
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+
+  Api:
+    Type: "AWS::Serverless::Api"
+    Properties:
+      StageName: !Ref StageName
+      DefinitionBody:
+        openapi: "3.0"
+        info:
+          title: !Ref "AWS::StackName"
+          version: "1.0"
+        paths:
+          /roll:
+            x-amazon-apigateway-any-method:
+              responses:
+                {}
+              x-amazon-apigateway-integration:
+                httpMethod: POST
+                type: aws_proxy
+                uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaRollDice.Arn}/invocations"
+          /roll/{proxy+}:
+            x-amazon-apigateway-any-method:
+              responses:
+                {}
+              x-amazon-apigateway-integration:
+                httpMethod: POST
+                type: aws_proxy
+                uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaRollDice.Arn}/invocations"
+
+  LambdaRollDice:
+    Type: 'AWS::Serverless::Function'
+    Properties:
+      Handler: lambda_function.roll_dice
+      CodeUri: .
+      Description: >-
+        Roll the dice with syntax xdy(+z).  For example 3d6+2
+      Timeout: 10
+
+      Events:
+        Base:
+          Type: Api
+          Properties:
+            Method: any
+            Path: /roll
+            RestApiId: !Ref Api
+        Others:
+          Type: Api
+          Properties:
+            Method: any
+            Path: /roll/{proxy+}
+            RestApiId: !Ref Api
+
+      Role: !GetAtt DefaultLambdaRole.Arn
+
+      Policies:
+        - VPCAccessPolicy: {}
+      VpcConfig:
+        SecurityGroupIds: !Ref SecurityGroupIds
+        SubnetIds: !Ref VpcSubnetIds
+
+Outputs:
+  Endpoint:
+    Value: !Sub "https://${Api}.execute-api.${AWS::Region}.amazonaws.com/Prod/"
